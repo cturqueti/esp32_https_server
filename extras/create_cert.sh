@@ -1,86 +1,82 @@
 #!/bin/bash
 set -e
-#------------------------------------------------------------------------------
-# cleanup any previously created files
+
+# Limpeza
 rm -f exampleca.* example.* cert.h private_key.h
 
 #------------------------------------------------------------------------------
-# create a CA called "myca"
+# 1. Criar uma CA (Autoridade Certificadora) válida
+#------------------------------------------------------------------------------
+openssl genrsa -out exampleca.key 2048  # Usar 2048 bits para maior segurança
 
-# create a private key
-openssl genrsa -out exampleca.key 1024
-
-# create certificate
-cat > exampleca.conf << EOF  
+cat > exampleca.cnf << EOF  
 [ req ]
-distinguished_name     = req_distinguished_name
-prompt                 = no
+distinguished_name = req_distinguished_name
+x509_extensions    = v3_ca
+prompt             = no
 [ req_distinguished_name ]
-C = DE
+C  = DE
 ST = BE
-L = Berlin
-O = MyCompany
+L  = Berlin
+O  = MyCompany
 CN = myca.local
+[ v3_ca ]
+basicConstraints       = critical, CA:TRUE
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer:always
 EOF
-openssl req -new -x509 -days 3650 -key exampleca.key -out exampleca.crt -config exampleca.conf
-# create serial number file
-echo "01" > exampleca.srl
+
+# Gerar certificado autoassinado da CA (válido por 10 anos)
+openssl req -x509 -new -nodes -key exampleca.key -sha256 -days 3650 -out exampleca.crt -config exampleca.cnf
 
 #------------------------------------------------------------------------------
-# create a certificate for the ESP (hostname: "myesp")
+# 2. Criar certificado para o ESP32
+#------------------------------------------------------------------------------
+openssl genrsa -out example.key 2048
 
-# create a private key
-openssl genrsa -out example.key 1024
-# create certificate signing request
-cat > example.conf << EOF  
+cat > example.csr.cnf << EOF  
 [ req ]
-distinguished_name     = req_distinguished_name
-prompt                 = no
+distinguished_name = req_distinguished_name
+prompt             = no
 [ req_distinguished_name ]
-C = DE
+C  = DE
 ST = BE
-L = Berlin
-O = MyCompany
+L  = Berlin
+O  = MyCompany
 CN = esp32.local
 EOF
-openssl req -new -key example.key -out example.csr -config example.conf
 
-# have myca sign the certificate
-openssl x509 -days 3650 -CA exampleca.crt -CAkey exampleca.key -in example.csr -req -out example.crt
+# Gerar CSR (Certificate Signing Request)
+openssl req -new -key example.key -out example.csr -config example.csr.cnf
 
-# verify
+# Criar arquivo de extensão para o certificado do ESP32
+cat > example.ext << EOF  
+authorityKeyIdentifier = keyid,issuer
+basicConstraints       = CA:FALSE
+keyUsage               = digitalSignature, nonRepudiation, keyEncipherment
+subjectAltName         = DNS:esp32.local
+EOF
+
+# Assinar o certificado com a CA (adicionando extensões)
+openssl x509 -req -in example.csr -CA exampleca.crt -CAkey exampleca.key -CAcreateserial \
+    -out example.crt -days 3650 -sha256 -extfile example.ext
+
+# Verificar (agora deve funcionar)
 openssl verify -CAfile exampleca.crt example.crt
 
-# convert private key and certificate into DER format
+#------------------------------------------------------------------------------
+# 3. Converter para DER e gerar arquivos .h
+#------------------------------------------------------------------------------
 openssl rsa -in example.key -outform DER -out example.key.DER
 openssl x509 -in example.crt -outform DER -out example.crt.DER
 
-# create header files
-echo "#ifndef CERT_H_" > ./cert.h
-echo "#define CERT_H_" >> ./cert.h
-xxd -i example.crt.DER >> ./cert.h
-echo "#endif" >> ./cert.h
-
-echo "#ifndef PRIVATE_KEY_H_" > ./private_key.h
-echo "#define PRIVATE_KEY_H_" >> ./private_key.h
-xxd -i example.key.DER >> ./private_key.h
-echo "#endif" >> ./private_key.h
-
-# Copy files to every example
-for D in ../examples/*; do
-  if [ -d "${D}" ] && [ -f "${D}/$(basename $D).ino" ]; then
-    echo "Adding certificate to example $(basename $D)"
-    cp ./cert.h ./private_key.h "${D}/"
-  fi
-done
+# Gerar cert.h e private_key.h
+xxd -i example.crt.DER > cert.h
+xxd -i example.key.DER > private_key.h
 
 echo ""
-echo "Certificates created!"
-echo "---------------------"
-echo ""
-echo "  Private key:      private_key.h"
-echo "  Certificate data: cert.h"
-echo ""
-echo "Make sure to have both files available for inclusion when running the examples."
-echo "The files have been copied to all example directories, so if you open an example"
-echo " sketch, you should be fine."
+echo "✅ Certificados criados com sucesso!"
+echo "-----------------------------------"
+echo "Arquivos gerados:"
+echo "  - cert.h"
+echo "  - private_key.h"
